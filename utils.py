@@ -25,13 +25,18 @@ def get_device() -> torch.device:
         return torch.device("cpu")
 
 
-def load_model_and_tokenizer(model_name: str, device: torch.device):
+def load_model_and_tokenizer(
+    model_name: str,
+    device: torch.device,
+    use_4bit: bool = False,
+):
     """
     Load a HuggingFace model and tokenizer.
     
     Args:
         model_name: HuggingFace model identifier
         device: Target device
+        use_4bit: Whether to use 4-bit quantization (for large models)
         
     Returns:
         model, tokenizer tuple
@@ -47,13 +52,26 @@ def load_model_and_tokenizer(model_name: str, device: torch.device):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Configure quantization for large models
+    quantization_config = None
+    if use_4bit and device.type == "cuda":
+        from transformers import BitsAndBytesConfig
+        print("Using 4-bit quantization")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+    
     # Load model with appropriate dtype
     if device.type == "cuda":
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,  # bfloat16 is more stable than float16
             device_map="auto",
             trust_remote_code=True,
+            quantization_config=quantization_config,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -69,3 +87,4 @@ def load_model_and_tokenizer(model_name: str, device: torch.device):
     print(f"Model loaded: {n_layers} layers, hidden_dim={hidden_dim}")
     
     return model, tokenizer
+
