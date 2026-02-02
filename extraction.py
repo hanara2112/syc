@@ -45,21 +45,18 @@ def extract_activations(
     pairs: list[dict],
     layer_idx: int,
     device: torch.device,
-    batch_size: int = 1,
+    extraction_mode: str = "last",
+    mean_pool_n: int = 5,
     desc: str = "Extracting",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Extract activations at the LAST TOKEN of the full sequence (prompt + answer).
+    Extract activations from model hidden states.
     
-    Why include the answer?
-    -----------------------
-    The contrastive pairs share the SAME prompt but have DIFFERENT answers:
-    - Sycophantic: prompt + " (B)"
-    - Non-sycophantic: prompt + " (A)"
-    
-    If we only tokenize the prompt, both get identical activations!
-    We need to include the answer so the model processes the full context,
-    and extract at the last token which captures the "decision" representation.
+    Extraction modes:
+    -----------------
+    - "last": Last token of the full sequence (prompt + answer)
+    - "first_answer": First token of the answer (transition state)
+    - "mean_pool": Mean of last N tokens (more robust for manifold analysis)
     
     Args:
         model: HuggingFace model
@@ -67,7 +64,8 @@ def extract_activations(
         pairs: List of contrastive pair dicts with 'prompt', 'completion', 'label'
         layer_idx: Which layer to extract from (0-indexed)
         device: Torch device
-        batch_size: Batch size (currently only 1 supported for simplicity)
+        extraction_mode: One of "last", "first_answer", "mean_pool"
+        mean_pool_n: Number of tokens to pool when using "mean_pool"
         desc: Description for progress bar
         
     Returns:
@@ -81,10 +79,19 @@ def extract_activations(
         # Build the prompt
         prompt_text = build_chat_prompt(tokenizer, pair["prompt"])
         
-        # Include the completion/answer!
+        # Include the completion/answer
         full_text = prompt_text + pair["completion"]
         
-        # Tokenize the full sequence
+        # Tokenize prompt separately to know where answer starts
+        prompt_inputs = tokenizer(
+            prompt_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048,
+        )
+        prompt_length = prompt_inputs["input_ids"].shape[1]
+        
+        # Tokenize full sequence
         inputs = tokenizer(
             full_text,
             return_tensors="pt",
@@ -92,16 +99,33 @@ def extract_activations(
             max_length=2048,
         ).to(device)
         
+        total_length = inputs["input_ids"].shape[1]
+        
         # Forward pass
         with torch.no_grad():
             outputs = model(**inputs, output_hidden_states=True)
         
-        # Extract hidden state at the LAST token position
-        # hidden_states[0] is embeddings, hidden_states[1] is layer 0, etc.
+        # Get hidden states for this layer
         hidden = outputs.hidden_states[layer_idx + 1]
         
-        # Take the last token's representation
-        activation = hidden[0, -1, :].float().cpu().numpy()
+        # Extract based on mode
+        if extraction_mode == "last":
+            # Last token of full sequence
+            activation = hidden[0, -1, :].float().cpu().numpy()
+            
+        elif extraction_mode == "first_answer":
+            # First token of the answer (transition state)
+            # This is at position prompt_length (0-indexed)
+            extract_pos = min(prompt_length, total_length - 1)
+            activation = hidden[0, extract_pos, :].float().cpu().numpy()
+            
+        elif extraction_mode == "mean_pool":
+            # Mean of last N tokens
+            start_pos = max(0, total_length - mean_pool_n)
+            activation = hidden[0, start_pos:, :].float().mean(dim=0).cpu().numpy()
+            
+        else:
+            raise ValueError(f"Unknown extraction_mode: {extraction_mode}")
         
         activations.append(activation)
         labels.append(pair["label"])
