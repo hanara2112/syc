@@ -49,15 +49,17 @@ def extract_activations(
     desc: str = "Extracting",
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Extract activations at the LAST TOKEN OF THE PROMPT.
+    Extract activations at the LAST TOKEN of the full sequence (prompt + answer).
     
-    Why this position?
-    -----------------
-    At the last token of the prompt (before any answer token):
-    1. The model has processed the full context (biography + question).
-    2. It has decided whether to be sycophantic or honest.
-    3. It has NOT yet started generating the answer token (A/B).
-    4. This isolates the "sycophancy decision" from "token identity".
+    Why include the answer?
+    -----------------------
+    The contrastive pairs share the SAME prompt but have DIFFERENT answers:
+    - Sycophantic: prompt + " (B)"
+    - Non-sycophantic: prompt + " (A)"
+    
+    If we only tokenize the prompt, both get identical activations!
+    We need to include the answer so the model processes the full context,
+    and extract at the last token which captures the "decision" representation.
     
     Args:
         model: HuggingFace model
@@ -76,12 +78,15 @@ def extract_activations(
     labels = []
     
     for pair in tqdm(pairs, desc=desc, leave=False):
-        # Build the prompt (WITHOUT the completion)
+        # Build the prompt
         prompt_text = build_chat_prompt(tokenizer, pair["prompt"])
         
-        # Tokenize
+        # Include the completion/answer!
+        full_text = prompt_text + pair["completion"]
+        
+        # Tokenize the full sequence
         inputs = tokenizer(
-            prompt_text,
+            full_text,
             return_tensors="pt",
             truncation=True,
             max_length=2048,

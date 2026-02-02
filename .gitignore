@@ -1,0 +1,7 @@
+# Results (large files)
+*.npz
+*.zip
+results/
+__pycache__/
+*.pyc
+.DS_Store
