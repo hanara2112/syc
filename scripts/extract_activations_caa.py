@@ -110,101 +110,96 @@ def main():
     print(f"Extracting layers: {layers_to_extract}")
     
     # Storage
-    all_activations = {l: [] for l in layers_to_extract}
     metadata = []
     
+    # Initialize separate storage files per layer to append effectively?
+    # Appending to .npz is hard. Better to save chunks or usage a memory mapped array.
+    # Approach: Save chunks every N samples. Merge later? 
+    # Or just keep list but clear more aggressively?
+    # 28k samples * 32 layers * 4096 dim * 4 bytes = ~14 GB. That's on the edge for 16GB RAM.
+    # Better to save chunks.
+    
+    CHUNK_SIZE = 2000
+    chunk_idx = 0
+    current_chunk_activations = {l: [] for l in layers_to_extract}
+    current_chunk_metadata = []
+
+    print(f"Starting extraction with chunk size {CHUNK_SIZE}...")
+
     for i, item in enumerate(tqdm(dataset)):
         prompt = item['prompt']
-        
-        # In the factorial dataset, 'target_token' is usually " (A)" or " (B)"
-        # We want to force this completion.
         completion = item['target_token']
-        
         full_text = prompt + completion
         
-        # Identify extraction position
-        inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
-        
-        # We need to find the position indices. 
-        # Using the helper function logic inline to use the full `inputs` object correctly
-        # Re-tokenizing prompt to find length
-        prompt_inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
-        # Note: 'inputs' usually has special tokens added (like BOS), so we need to account for that.
-        # If tokenizer adds BOS, len(inputs) = len(prompt_tokens) + len(completion_tokens) + 1
-        
-        # Robust method:
-        # 1. Feed full text
-        # 2. Extract at index corresponding to the start of completion
-        
-        # Let's count non-padding tokens
-        total_len = inputs['input_ids'].shape[1]
-        
-        # Calculate prompt length in tokens (without special tokens if inputs has them? No, inputs has them)
-        # Let's trust the tokenizer's consistency for now
-        # Actually, for many chat models, we need to apply chat template?
-        # The prompt in the dataset is raw text "Hello...". 
-        # CAUTION: The user dataset seems to have raw prompts. 
-        # Ideally we should apply chat template if it's a chat model, BUT the user code 
-        # `sycophancy/extraction.py` used `build_chat_prompt`.
-        # The `syc_dim/scripts/construct_factorial_dataset.py` creates raw strings.
-        # I should probably just use the raw strings as provided in the dataset 'prompt' field 
-        # because that's what the factorial construction script made. 
-        # However, to be safe, I'll stick to the text in the 'prompt' field.
-        
-        # Calculate split point
-        # A simple way that works for most sentencepiece tokenizers:
-        # Encode prompt
-        prompt_ids = tokenizer.encode(prompt, add_special_tokens=True) 
-        
-        # FIX: Qwen tokenizes " (A)" as [" (", "A", ")"]. 
-        # The first token " (" is identical for both (A) and (B).
-        # We must extract at offset +1 to get the "A" or "B" token.
-        answer_pos = len(prompt_ids) + 1
-        
-        # Check boundary - if the tokenization merges the last token of prompt and first of completion,
-        # we might need to back up. But "(A)" usually starts with a space and is distinct.
-        
-        with torch.no_grad():
-            outputs = model(**inputs, output_hidden_states=True)
+        try:
+            inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
+            prompt_ids = tokenizer.encode(prompt, add_special_tokens=True) 
+            answer_pos = len(prompt_ids) + 1
             
-        for layer in layers_to_extract:
-            # hidden_states is tuple (embeddings, layer_1, ... layer_N)
-            # layer_idx maps to hidden_states[layer_idx + 1]
-            hidden = outputs.hidden_states[layer + 1]
-            
-            # Extract at answer_pos
-            # If answer_pos is out of bounds (can happen with some tokenizers/special tokens mismatch), clamp it
-            pos = min(answer_pos, hidden.shape[1] - 1)
-            
-            # Shape: [batch, seq, dim] -> [dim]
-            act = hidden[0, pos, :].float().cpu().numpy()
-            all_activations[layer].append(act)
-            
-        # Store metadata
-        meta = {
-            "question_id": item.get("question_id"),
-            "condition": item.get("condition"),
-            "persona": item.get("persona"),
-            "agreement": item.get("agreement"), # agree/disagree
-            "target_token": item.get("target_token") # (A)/(B)
-        }
-        metadata.append(meta)
+            with torch.no_grad():
+                outputs = model(**inputs, output_hidden_states=True)
+                
+            for layer in layers_to_extract:
+                hidden = outputs.hidden_states[layer + 1]
+                pos = min(answer_pos, hidden.shape[1] - 1)
+                act = hidden[0, pos, :].float().cpu().numpy()
+                current_chunk_activations[layer].append(act)
+                
+            # Store metadata
+            meta = {
+                "question_id": item.get("question_id"),
+                "condition": item.get("condition"),
+                "persona": item.get("persona"),
+                "agreement": item.get("agreement"), 
+                "target_token": item.get("target_token")
+            }
+            current_chunk_metadata.append(meta)
 
-    # Save results
-    output_dir = os.path.dirname(args.output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+            # Cleanup
+            del outputs, inputs, hidden
+            if i % 100 == 0:
+                torch.cuda.empty_cache()
+
+            # Save Chunk
+            if (i + 1) % CHUNK_SIZE == 0:
+                print(f"Saving chunk {chunk_idx}...")
+                chunk_path = f"{args.output_path.replace('.npz', '')}_chunk_{chunk_idx}.npz"
+                
+                save_dict = {
+                    "metadata": current_chunk_metadata,
+                    "layers": layers_to_extract
+                }
+                for layer in layers_to_extract:
+                    save_dict[f"layer_{layer}"] = np.vstack(current_chunk_activations[layer])
+                
+                np.savez(chunk_path, **save_dict)
+                print(f"Saved {chunk_path}")
+                
+                # Reset buffers
+                current_chunk_activations = {l: [] for l in layers_to_extract}
+                current_chunk_metadata = []
+                chunk_idx += 1
+                
+        except Exception as e:
+            print(f"Error processing sample {i}: {e}")
+            continue
+
+    # Save remaining
+    if current_chunk_metadata:
+        print(f"Saving final chunk {chunk_idx}...")
+        chunk_path = f"{args.output_path.replace('.npz', '')}_chunk_{chunk_idx}.npz"
         
-    save_dict = {
-        "metadata": metadata,
-        "layers": layers_to_extract
-    }
-    
-    for layer in layers_to_extract:
-        save_dict[f"layer_{layer}"] = np.vstack(all_activations[layer])
+        save_dict = {
+            "metadata": current_chunk_metadata,
+            "layers": layers_to_extract
+        }
+        for layer in layers_to_extract:
+            save_dict[f"layer_{layer}"] = np.vstack(current_chunk_activations[layer])
         
-    np.savez(args.output_path, **save_dict)
-    print(f"Saved activations to {args.output_path}")
+        np.savez_compressed(chunk_path, **save_dict)
+        print(f"Saved {chunk_path}")
+
+    print("Extraction complete. Please merge chunks manually or load them sequentially in analysis.")
 
 if __name__ == "__main__":
     main()
