@@ -154,8 +154,12 @@ def main():
         # Calculate split point
         # A simple way that works for most sentencepiece tokenizers:
         # Encode prompt
-        prompt_ids = tokenizer.encode(prompt, add_special_tokens=True) # inputs likely has special tokens too
-        answer_pos = len(prompt_ids) 
+        prompt_ids = tokenizer.encode(prompt, add_special_tokens=True) 
+        
+        # FIX: Qwen tokenizes " (A)" as [" (", "A", ")"]. 
+        # The first token " (" is identical for both (A) and (B).
+        # We must extract at offset +1 to get the "A" or "B" token.
+        answer_pos = len(prompt_ids) + 1
         
         # Check boundary - if the tokenization merges the last token of prompt and first of completion,
         # we might need to back up. But "(A)" usually starts with a space and is distinct.
