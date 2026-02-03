@@ -1,7 +1,18 @@
-# Results (large files)
+# Data
+*.jsonl
+*.json
+syc_dim/data/
+sycophancy/fac_data/
+
+# Results
 *.npz
-*.zip
+*.npy
 results/
+syc_dim/results/
+
+# Python image artifacts
 __pycache__/
 *.pyc
+
+# System
 .DS_Store
