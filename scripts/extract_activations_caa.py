@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the activations npz file")
     parser.add_argument("--layers", type=int, nargs="+", default=None, help="Specific layers to extract (if None, all layers)")
     parser.add_argument("--max_samples", type=int, default=None, help="Maximum number of samples to process")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for extraction") 
+    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for extraction") 
     parser.add_argument("--chunk_size", type=int, default=2000, help="Save to disk every N samples")
     return parser.parse_args()
 
