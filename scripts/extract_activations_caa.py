@@ -90,6 +90,8 @@ def get_answer_token_index(tokenizer, prompt, completion):
 def main():
     args = parse_args()
     
+    print(f"Loading model: {args.model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(args.model_name, device_map="auto", trust_remote_code=True, dtype=torch.float16)
     
     dataset = load_dataset(args.dataset_path)
