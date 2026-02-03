@@ -1,15 +1,15 @@
 import os
-# Block TF from hogging GPU memory if it gets imported indirectly
-os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" 
-os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 import argparse
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from tqdm import tqdm
 import sys
+
+# TF settings
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" 
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 
 
 
@@ -126,7 +126,8 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
     # Use a few samples from metadata
     samples = metadata[:num_samples]
     
-    v = torch.tensor(vector, dtype=torch.float16, device=model.device)
+    dev = next(model.parameters()).device
+    v = torch.tensor(vector, dtype=torch.float16, device=dev)
     v = v / v.norm() # Normalize checking direction
     
     dot_products = []
@@ -140,7 +141,8 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
         
         full_text = prompt + target
         
-        inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
+        dev = next(model.parameters()).device
+        inputs = tokenizer(full_text, return_tensors="pt").to(dev)
         
         # Forward with hooks to catch gradient at layer
         # We need gradient of Loss w.r.t Activation at Layer X.
@@ -239,11 +241,14 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
         device_map="auto", 
-        load_in_4bit=True, # Drastically reduces VRAM usage to ~5GB
-        torch_dtype=torch.float16
+        quantization_config=bnb_config
     )
     model.eval()
     
