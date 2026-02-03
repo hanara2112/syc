@@ -1,4 +1,8 @@
 import os
+# Block TF from hogging GPU memory if it gets imported indirectly
+os.environ["CUDA_VISIBLE_DEVICES"] = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" 
+os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
 import argparse
 import numpy as np
 import torch
@@ -115,6 +119,10 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
     """
     print(f"\n--- Gradient Sensitivity Test (Layer {layer_idx}) ---")
     
+    # Clean up before starting
+    torch.cuda.empty_cache()
+    model.zero_grad()
+    
     # Use a few samples from metadata
     samples = metadata[:num_samples]
     
@@ -198,9 +206,12 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
                 g_vec = grad[pos].float() # [Hidden]
                 
                 # Sensitivity = Dot Product
-                # If v aligned with -gradient, then adding v reduces loss.
                 sens = torch.dot(g_vec, v.float()).item()
                 dot_products.append(sens)
+                
+            # Cleanup to free memory
+            del outputs, loss, grad
+            torch.cuda.empty_cache()
             
     avg_sens = np.mean(dot_products)
     print(f"Average Gradient Sensitivity (Dot Product): {avg_sens:.6f}")
