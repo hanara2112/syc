@@ -66,11 +66,22 @@ def main():
     
     print(f"Loading model: {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    # Ensure pad token is set for batching
+    
+    # Robust Padding Token Fix
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    # Qwen/Llama usually handle right padding correctly for attention masks
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+            print(f"Set pad_token to eos_token: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
+        else:
+            # Fallback for models without EOS (rare)
+            tokenizer.add_special_tokens({'pad_token': '<|extra_0|>'})
+            print("Added new special token for padding.")
+            
+    # Qwen/Llama usually handle right padding correctly for activation extraction
+    # (Attributes are aligned to the left)
     tokenizer.padding_side = "right" 
+ 
     
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
