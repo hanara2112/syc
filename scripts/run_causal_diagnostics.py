@@ -86,15 +86,28 @@ def logit_projection_test(model, tokenizer, vector, layer_idx, top_k=20):
         print(f"  {token:<20} | Logit: {val.item():.4f}")
         
     # 5. Check Specific Tokens
-    targets = [" Yes", " No", " Agree", " Disagree", " (A)", " (B)"]
+    # Qwen 2.5 tokenizes " (A)" as multiple tokens. We usually care about the choice token itself.
+    targets = [" (A)", " (B)", "A", "B", " Yes", " No"]
     print("\nSpecific Token Scores:")
     for t in targets:
         ids = tokenizer.encode(t, add_special_tokens=False)
-        if len(ids) == 1:
-            score = logits[ids[0]].item()
-            print(f"  '{t}': {score:.4f}")
-        else:
-            print(f"  '{t}' tokenizes to multiple IDs {ids}, skipping single-logit check.")
+        # If multi-token, we'll take the most salient one (often the alphabetical char)
+        # but for simplicity, let's just check the logit of the first token in the sequence 
+        # that isn't just whitespace/bracket. 
+        # Easier: just check if ANY of the IDs have a high score.
+        target_id = ids[0]
+        if len(ids) > 1:
+            # For " (A)", ids might be [space, bracket, A, bracket] or similar.
+            # In Qwen 2.5-7B: " (A)" -> [320, 32, 8]
+            # ID 32 is "A". Let's try to find an alphabetical character ID if possible.
+            for tid in ids:
+                token_text = tokenizer.decode([tid])
+                if any(c.isalpha() for c in token_text):
+                    target_id = tid
+                    break
+        
+        score = logits[target_id].item()
+        print(f"  '{t}' (ID {target_id}): {score:.4f}")
 
 def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num_samples=10):
     """
@@ -111,6 +124,9 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
     dot_products = []
     
     for item in tqdm(samples):
+        if 'prompt' not in item or 'target_token' not in item:
+            continue
+            
         prompt = item['prompt']
         target = item['target_token'] # e.g. " (A)"
         

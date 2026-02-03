@@ -149,6 +149,7 @@ def main():
             for i in range(len(batch_prompts)):
                 meta = {
                     "question_id": batch['question_id'][i] if isinstance(batch['question_id'], list) else batch['question_id'][i].item(),
+                    "prompt": batch['prompt'][i],
                     "condition": batch['condition'][i],
                     "persona": batch['persona'][i],
                     "agreement": batch['agreement'][i],
