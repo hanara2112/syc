@@ -7,9 +7,16 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from tqdm import tqdm
 import sys
 
-# TF settings
+# TF settings - try to block it before it grabs the GPU
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3" 
 os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+# Force TF to CPU-only mode if it's already being imported
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
+try:
+    import tensorflow as tf
+    tf.config.set_visible_devices([], 'GPU')
+except ImportError:
+    pass
 
 
 
@@ -241,14 +248,13 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-    )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
-        quantization_config=bnb_config
+        device_map="auto", 
+        torch_dtype=torch.float16
     )
+    # Drastically reduces memory usage during the backward pass
+    model.gradient_checkpointing_enable() 
     model.eval()
     
     # 3. Logit Lens
