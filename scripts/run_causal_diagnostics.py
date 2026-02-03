@@ -7,28 +7,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 import sys
 
-# --- COMPATIBILITY PATCH FOR QWEN ---
-import transformers
-try:
-    from transformers import BeamSearchScorer
-except ImportError:
-    FoundScorer = None
-    try:
-        from transformers.generation import BeamSearchScorer
-        FoundScorer = BeamSearchScorer
-    except ImportError:
-        try:
-            from transformers.generation.beam_search import BeamSearchScorer
-            FoundScorer = BeamSearchScorer
-        except ImportError:
-            class BeamSearchScorer: pass
-            FoundScorer = BeamSearchScorer
 
-    if FoundScorer:
-        transformers.BeamSearchScorer = FoundScorer
-        if 'transformers' in sys.modules:
-             setattr(sys.modules['transformers'], 'BeamSearchScorer', FoundScorer)
-# -----------------------------------
 
 def load_activations(path):
     print(f"Loading activations from {path}...")
@@ -150,8 +129,8 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
             return hook
             
         # Register hook on the output of the layer
-        # Qwen structure: model.transformer.h[i]
-        target_layer = model.transformer.h[layer_idx]
+        # Qwen2.5 (HF Native): model.model.layers[i]
+        target_layer = model.model.layers[layer_idx]
         
         # We need to retain grad on the output of this layer
         # In PyTorch, we can register a hook on the tensor in forward, 
@@ -216,7 +195,7 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen-7B")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B")
     parser.add_argument("--activations_path", type=str, required=True)
     parser.add_argument("--layer", type=int, default=30)
     args = parser.parse_args()
@@ -228,17 +207,14 @@ def main():
     
     # 2. Load Model
     print(f"Loading Model: {args.model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     
-    # Patch padding
     if tokenizer.pad_token is None:
-        if tokenizer.eos_token is not None:
-             tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token = tokenizer.eos_token
     
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
         device_map="auto", 
-        trust_remote_code=True,
         dtype=torch.float16
     )
     model.eval()

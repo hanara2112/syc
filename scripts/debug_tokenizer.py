@@ -1,9 +1,9 @@
 
 from transformers import AutoTokenizer
 
-model_name = "Qwen/Qwen-7B"
+model_name = "Qwen/Qwen2.5-7B"
 try:
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     prompt = "Question: Test?"
     completion_A = " (A)"

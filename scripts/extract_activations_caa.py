@@ -8,29 +8,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from torch.utils.data import DataLoader, Dataset
 import sys
 
-# --- MONKEY PATCH FOR QWEN + TRANSFORMERS > 4.34 ---
-import transformers
-try:
-    from transformers import BeamSearchScorer
-except ImportError:
-    FoundScorer = None
-    try:
-        from transformers.generation import BeamSearchScorer
-        FoundScorer = BeamSearchScorer
-    except ImportError:
-        try:
-            from transformers.generation.beam_search import BeamSearchScorer
-            FoundScorer = BeamSearchScorer
-        except ImportError:
-            class BeamSearchScorer: pass
-            FoundScorer = BeamSearchScorer
 
-    if FoundScorer:
-        transformers.BeamSearchScorer = FoundScorer
-        if 'transformers' in sys.modules:
-             setattr(sys.modules['transformers'], 'BeamSearchScorer', FoundScorer)
-        print("Monkey-patched transformers.BeamSearchScorer for Qwen compatibility.")
-# ---------------------------------------------------
 
 class SycophancyDataset(Dataset):
     def __init__(self, data):
@@ -44,7 +22,7 @@ class SycophancyDataset(Dataset):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Extract activations for sycophancy analysis using CAA method.")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen-7B", help="HuggingFace model name or path")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B", help="HuggingFace model name or path")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the factorial dataset jsonl")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the activations npz file")
     parser.add_argument("--layers", type=int, nargs="+", default=None, help="Specific layers to extract (if None, all layers)")
@@ -65,7 +43,7 @@ def main():
     args = parse_args()
     
     print(f"Loading model: {args.model_name}")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     
     # Robust Padding Token Fix
     if tokenizer.pad_token is None:
@@ -86,7 +64,6 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
         device_map="auto", 
-        trust_remote_code=True, 
         dtype=torch.float16
     )
     model.eval()
