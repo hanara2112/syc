@@ -63,8 +63,8 @@ def main():
     
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
-        device_map="auto", 
-        torch_dtype=torch.float16
+        device_map="cuda:0", # Force to first GPU to avoid slow offloading if possible
+        torch_dtype=torch.bfloat16 # Qwen 2.5 is native BF16
     )
     model.eval()
     
@@ -129,19 +129,20 @@ def main():
             with torch.no_grad():
                 outputs = model(**inputs, output_hidden_states=True)
             
-            # 5. Gather activations
+            # 5. Gather activations - Optimized (Reduce GPU-CPU syncing)
+            indices = torch.tensor(target_indices, device=model.device)
             for layer in layers_to_extract:
                 # Shape: [Batch, Seq, Hidden]
                 hidden = outputs.hidden_states[layer + 1] 
                 
-                batch_acts = []
-                for b_idx in range(len(batch_prompts)):
-                    # Clamp index to handle potential truncation or mismatches
-                    idx = min(target_indices[b_idx], hidden.shape[1] - 1)
-                    vec = hidden[b_idx, idx, :].float().cpu().numpy()
-                    batch_acts.append(vec)
+                # Advanced indexing to get all batch vectors at once
+                # Indices must be clamped to avoid sequence length errors
+                clamped_indices = torch.clamp(indices, max=hidden.shape[1] - 1)
+                batch_vecs = hidden[torch.arange(len(batch_prompts)), clamped_indices, :]
                 
-                current_chunk_activations[layer].extend(batch_acts)
+                # Move entire batch for this layer to CPU in one go
+                batch_vecs_cpu = batch_vecs.to(torch.float32).cpu().numpy()
+                current_chunk_activations[layer].extend(list(batch_vecs_cpu))
 
             # 6. Store Metadata
             # batch is a dict of lists, we iterate up to batch size
