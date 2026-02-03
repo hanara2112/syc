@@ -247,7 +247,7 @@ def main():
     )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
-        device_map="auto", 
+        device_map={"": 0}, # Forces everything to GPU 0, avoiding accelerate's dispatch bug
         quantization_config=bnb_config
     )
     model.eval()
