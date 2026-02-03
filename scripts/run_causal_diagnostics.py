@@ -242,6 +242,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
         device_map="auto", 
+        load_in_4bit=True, # Drastically reduces VRAM usage to ~5GB
         torch_dtype=torch.float16
     )
     model.eval()
