@@ -1,14 +1,13 @@
 # Data
 *.jsonl
 *.json
-syc_dim/data/
-sycophancy/fac_data/
+sycophancy/data/sycophancy_on_political_typology_quiz.jsonl
 
 # Results
 *.npz
 *.npy
 results/
-syc_dim/results/
+sycophancy/results/
 
 # Python image artifacts
 __pycache__/
