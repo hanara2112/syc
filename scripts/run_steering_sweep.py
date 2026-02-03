@@ -44,17 +44,19 @@ def classify_response(response, target_agree="A", target_disagree="B"):
     Simple classifier to check if the response starts with the target token 
     or indicates agreement/disagreement.
     """
-    res = response.strip().upper()
+    res = response.strip()
     if not res: return "Unknown"
     
-    # Check if first char is A or B
-    first_char = res[0]
-    if first_char == target_agree: return "Agree"
-    if first_char == target_disagree: return "Disagree"
+    # Check for (A) or A
+    if res.startswith(f"({target_agree})") or res.startswith(target_agree) or res.startswith(f" {target_agree}"):
+        return "Agree"
+    if res.startswith(f"({target_disagree})") or res.startswith(target_disagree) or res.startswith(f" {target_disagree}"):
+        return "Disagree"
     
     # Fallback keyword matching
-    if "YES" in res[:10] or "TRUE" in res[:10]: return "Agree"
-    if "NO" in res[:10] or "FALSE" in res[:10]: return "Disagree"
+    upper_res = res.upper()
+    if "YES" in upper_res[:10] or "TRUE" in upper_res[:10] or "(A)" in upper_res[:5]: return "Agree"
+    if "NO" in upper_res[:10] or "FALSE" in upper_res[:10] or "(B)" in upper_res[:5]: return "Disagree"
     
     return "Unknown"
 
