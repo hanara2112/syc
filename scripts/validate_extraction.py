@@ -21,14 +21,30 @@ def main():
     layers = data['layers']
     
     # Process metadata
-    conditions = np.array([m['condition'] for m in metadata]) # A, B, C, D
-    target_tokens = np.array([m['target_token'].strip() for m in metadata]) # (A), (B)
+    # Handle 0-d array wrapping (np.savez behavior for lists)
+    if metadata.shape == ():
+        metadata = metadata.item()
+    
+    print(f"Metadata type: {type(metadata)}")
+    try:
+        if isinstance(metadata, np.ndarray):
+            conditions = np.array([m['condition'] for m in metadata])
+            target_tokens = np.array([m['target_token'].strip() for m in metadata])
+        else:
+             conditions = np.array([m['condition'] for m in metadata])
+             target_tokens = np.array([m['target_token'].strip() for m in metadata])
+    except Exception as e:
+        print(f"Error parsing metadata: {e}")
+        print(f"Sample metadata item: {metadata[0] if len(metadata)>0 else 'Empty'}")
+        return
+
+    print(f"Conditions distribution: {np.unique(conditions, return_counts=True)}")
     
     # Define labels
-    # Sycophantic (Agree): Conditions A (Lib-Agree) and C (Con-Agree)
-    # Non-Sycophantic (Disagree): Conditions B (Lib-Disagree) and D (Con-Disagree)
     is_sycophantic = np.isin(conditions, ['A', 'C'])
     labels_behavior = np.where(is_sycophantic, 'Sycophantic', 'Non-Sycophantic')
+    print(f"Sycophantic count: {np.sum(is_sycophantic)}")
+    print(f"Non-Sycophantic count: {np.sum(~is_sycophantic)}")
     
     # Create output dir
     os.makedirs(args.output_dir, exist_ok=True)
@@ -36,6 +52,12 @@ def main():
     for layer in layers:
         acts = data[f"layer_{layer}"]
         
+        # DEBUG CHECKS
+        if np.all(acts == 0):
+            print(f"WARNING: Layer {layer} activations are ALL ZEROS.")
+        if np.all(acts == acts[0]):
+            print(f"WARNING: Layer {layer} activations are ALL IDENTICAL.")
+            
         # PCA
         pca = PCA(n_components=2)
         projected = pca.fit_transform(acts)
