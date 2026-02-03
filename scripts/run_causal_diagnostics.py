@@ -181,18 +181,18 @@ def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num
     print("Interpretation:")
     print("  Negative: Adding vector REDUCES loss (Causal/Aligned with target answer)")
     print("  Positive: Adding vector INCREASES loss (Opposed to target answer)")
+    return avg_sens
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B")
     parser.add_argument("--activations_path", type=str, required=True)
-    parser.add_argument("--layer", type=int, default=30)
+    parser.add_argument("--layers", type=int, nargs="+", default=[20])
+    parser.add_argument("--output_csv", type=str, default="results/causal_diagnostics.csv")
     args = parser.parse_args()
     
-    # 1. Load Vector
+    # 1. Load data
     data, metadata = load_activations(args.activations_path)
-    v_syc = get_sycophancy_vector(data, metadata, args.layer)
-    print(f"Sycophancy Vector (Layer {args.layer}) Norm: {np.linalg.norm(v_syc):.4f}")
     
     # 2. Load Model
     print(f"Loading Model: {args.model_name}")
@@ -206,15 +206,43 @@ def main():
         device_map="auto", 
         torch_dtype=torch.float16
     )
-    # Drastically reduces memory usage during the backward pass
     model.gradient_checkpointing_enable() 
     model.eval()
     
-    # 3. Logit Lens
-    logit_projection_test(model, tokenizer, v_syc, args.layer)
+    results = []
     
-    # 4. Gradient Sensitivity
-    gradient_sensitivity_test(model, tokenizer, v_syc, metadata, args.layer)
+    for layer_idx in args.layers:
+        print(f"\n{'='*20}\nProcessing Layer {layer_idx}\n{'='*20}")
+        
+        # 3. Get Vector
+        v_syc = get_sycophancy_vector(data, metadata, layer_idx)
+        
+        # 4. Logit Lens
+        # We can't easily return a single number, maybe max logit or score of targets?
+        # Let's just track the score of target 'A' as a proxy for 'behavioral pressure'
+        ids = tokenizer.encode("A", add_special_tokens=False)
+        target_id = ids[0]
+        
+        W_out = model.lm_head.weight
+        v = torch.tensor(v_syc, dtype=W_out.dtype, device=W_out.device)
+        logits = torch.matmul(W_out, v)
+        logit_a = logits[target_id].item()
+        
+        logit_projection_test(model, tokenizer, v_syc, layer_idx)
+        
+        # 5. Gradient Sensitivity
+        avg_sens = gradient_sensitivity_test(model, tokenizer, v_syc, metadata, layer_idx)
+        
+        results.append({
+            "layer": layer_idx,
+            "logit_A_score": logit_a,
+            "avg_sensitivity": avg_sens
+        })
+        
+    import pandas as pd
+    df = pd.DataFrame(results)
+    df.to_csv(args.output_csv, index=False)
+    print(f"\nSaved causal diagnostics to {args.output_csv}")
 
 if __name__ == "__main__":
     main()
