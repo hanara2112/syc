@@ -10,7 +10,7 @@ from pathlib import Path
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Extract activations for sycophancy analysis using CAA method.")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen-7B-Chat", help="HuggingFace model name or path")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen-7B", help="HuggingFace model name or path")
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the factorial dataset jsonl")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the activations npz file")
     parser.add_argument("--layers", type=int, nargs="+", default=None, help="Specific layers to extract (if None, all layers)")

@@ -1,7 +1,7 @@
 # Data
 *.jsonl
+!data/sycophancy_factorial_dataset.jsonl
 *.json
-sycophancy/data/sycophancy_on_political_typology_quiz.jsonl
 
 # Results
 *.npz

@@ -4,10 +4,7 @@ numpy
 tqdm
 scikit-learn
 matplotlib
-transformers_stream_generator
+transformers_stream_generator==0.0.4
 einops
 accelerate
 tiktoken
-auto-gptq
-optimum
-bitsandbytes
