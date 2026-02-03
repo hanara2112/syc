@@ -173,7 +173,7 @@ def main():
             pos = min(answer_pos, hidden.shape[1] - 1)
             
             # Shape: [batch, seq, dim] -> [dim]
-            act = hidden[0, pos, :].cpu().numpy()
+            act = hidden[0, pos, :].float().cpu().numpy()
             all_activations[layer].append(act)
             
         # Store metadata
