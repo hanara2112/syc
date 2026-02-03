@@ -9,18 +9,33 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 
 # --- MONKEY PATCH FOR QWEN + TRANSFORMERS > 4.34 ---
-# Qwen's remote code uses transformers_stream_generator which expects BeamSearchScorer at top level.
-# Modern transformers moved it to .generation.
 import transformers
 try:
     from transformers import BeamSearchScorer
 except ImportError:
+    # Try locating it in generation submodules or mock it
+    FoundScorer = None
     try:
         from transformers.generation import BeamSearchScorer
-        transformers.BeamSearchScorer = BeamSearchScorer
-        print("Monkey-patched transformers.BeamSearchScorer for Qwen compatibility.")
+        FoundScorer = BeamSearchScorer
     except ImportError:
-        print("Could not patch BeamSearchScorer. Qwen loading might fail.")
+        try:
+            from transformers.generation.beam_search import BeamSearchScorer
+            FoundScorer = BeamSearchScorer
+        except ImportError:
+            # Fallback: Mock it so transformers_stream_generator doesn't crash on import
+            print("WARNING: BeamSearchScorer not found. Creating a dummy class.")
+            class BeamSearchScorer:
+                pass
+            FoundScorer = BeamSearchScorer
+
+    if FoundScorer:
+        transformers.BeamSearchScorer = FoundScorer
+        import sys
+        # Also ensure it's available in sys.modules for 'from transformers import ...'
+        if 'transformers' in sys.modules:
+             setattr(sys.modules['transformers'], 'BeamSearchScorer', FoundScorer)
+        print("Monkey-patched transformers.BeamSearchScorer for Qwen compatibility.")
 # ---------------------------------------------------
 
 def parse_args():
