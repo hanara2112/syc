@@ -120,114 +120,67 @@ def logit_projection_test(model, tokenizer, vector, layer_idx, top_k=20):
         score = logits[target_id].item()
         print(f"  '{t}' (ID {target_id}): {score:.4f}")
 
-def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num_samples=10):
+def gradient_sensitivity_test(model, tokenizer, vector, metadata, layer_idx, num_samples=10, epsilon=0.01):
     """
-    Computes dot product of vector with loss gradient.
+    Computes sensitivity using Finite Difference: [L(h + eps*v) - L(h)] / eps
+    This is much more memory efficient than a backward pass.
     """
-    print(f"\n--- Gradient Sensitivity Test (Layer {layer_idx}) ---")
+    print(f"\n--- Causal Sensitivity Test (Finite Difference) (Layer {layer_idx}) ---")
     
-    # Clean up before starting
     torch.cuda.empty_cache()
-    model.zero_grad()
-    
-    # Use a few samples from metadata
     samples = metadata[:num_samples]
+    v = torch.tensor(vector, dtype=torch.float16, device=model.device)
+    v = v / v.norm() 
     
-    dev = next(model.parameters()).device
-    v = torch.tensor(vector, dtype=torch.float16, device=dev)
-    v = v / v.norm() # Normalize checking direction
-    
-    dot_products = []
+    sensitivities = []
     
     for item in tqdm(samples):
-        if 'prompt' not in item or 'target_token' not in item:
-            continue
-            
-        prompt = item['prompt']
-        target = item['target_token'] # e.g. " (A)"
+        if 'prompt' not in item or 'target_token' not in item: continue
         
-        full_text = prompt + target
+        full_text = item['prompt'] + item['target_token']
+        inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
+        labels = inputs.input_ids.clone()
         
-        dev = next(model.parameters()).device
-        inputs = tokenizer(full_text, return_tensors="pt").to(dev)
-        
-        # Forward with hooks to catch gradient at layer
-        # We need gradient of Loss w.r.t Activation at Layer X.
-        
-        # Hook infrastructure
-        grad_dict = {}
-        def get_grad_hook(name):
-            def hook(grad):
-                grad_dict[name] = grad
-            return hook
-            
-        # Register hook on the output of the layer
-        # Qwen2.5 (HF Native): model.model.layers[i]
+        # 0-indexed position of the last prompt token
+        p_ids = tokenizer.encode(item['prompt'], add_special_tokens=True)
+        pos = len(p_ids) - 1 
+
+        # 1. Baseline Forward Pass
+        with torch.no_grad():
+            outputs = model(**inputs, labels=labels)
+            loss_base = outputs.loss.item()
+
+        # 2. Perturbed Forward Pass
+        # Hook to add epsilon * v to the activation
+        def intervention_hook(module, input, output):
+            # output is a tuple (hidden_states, ...) or just hidden_states
+            if isinstance(output, tuple):
+                h = output[0]
+                h[:, pos, :] += epsilon * v
+                return (h,) + output[1:]
+            else:
+                output[:, pos, :] += epsilon * v
+                return output
+
         target_layer = model.model.layers[layer_idx]
+        handle = target_layer.register_forward_hook(intervention_hook)
         
-        # We need to retain grad on the output of this layer
-        # In PyTorch, we can register a hook on the tensor in forward, 
-        # but simpler is to register a full backward hook on the module?
-        # Or easier: just run forward, find the tensor, .retain_grad()
-        
-        # Let's do the manual traverse for safety
-        # outputs = model.transformer(inputs.input_ids...)
-        # This is hard because we need the full model forward including loss.
-        
-        # Easier way: Use register_full_backward_hook on the layer module
-        handle = target_layer.register_full_backward_hook(
-            lambda module, grad_input, grad_output: grad_dict.update({'grad': grad_output[0]})
-        )
-        
-        # Forward
-        outputs = model(**inputs, labels=inputs.input_ids)
-        loss = outputs.loss
-        
-        # Backward
-        model.zero_grad()
-        loss.backward()
-        
+        with torch.no_grad():
+            outputs_perturbed = model(**inputs, labels=labels)
+            loss_perturbed = outputs_perturbed.loss.item()
+            
         handle.remove()
-        
-        # Get gradient
-        # grad_output[0] shape: [Batch, Seq, Hidden]
-        if 'grad' in grad_dict:
-            grad = grad_dict['grad'][0] # Remove batch dim (1)
+
+        # Sensitivity = (L_perturbed - L_base) / epsilon
+        # Negative means adding v REDUCED loss (v helped the model predict the target)
+        diff = (loss_perturbed - loss_base) / epsilon
+        sensitivities.append(diff)
             
-            # Identify position of answer (last token or target token)
-            # The loss is calculated on the shifted labels. 
-            # The gradient at position t comes from the loss at position t+1 (prediction of t+1).
-            # We want the gradient at the LAST PROMPT TOKEN, because that decides the First Answer Token.
-            # Target is " (A)". Let's say length is L.
-            # prompt len P. 
-            # We want prediction of token P+1. 
-            # So we need vector at pos P.
-            
-            # Simple heuristic: last token of input sequence - len(target)
-            # Or just: Index of last token - 1?
-            # Let's take the position corresponding to the token JUST BEFORE the target.
-            
-            # Re-tokenize prompt
-            p_ids = tokenizer.encode(prompt, add_special_tokens=True)
-            pos = len(p_ids) - 1 # 0-indexed idx of last prompt token
-            
-            if pos < grad.shape[0]:
-                g_vec = grad[pos].float() # [Hidden]
-                
-                # Sensitivity = Dot Product
-                sens = torch.dot(g_vec, v.float()).item()
-                dot_products.append(sens)
-                
-            # Cleanup to free memory
-            del outputs, loss, grad
-            torch.cuda.empty_cache()
-            
-    avg_sens = np.mean(dot_products)
-    print(f"Average Gradient Sensitivity (Dot Product): {avg_sens:.6f}")
+    avg_sens = np.mean(sensitivities)
+    print(f"Average Causal Sensitivity: {avg_sens:.6f}")
     print("Interpretation:")
-    print("  Negative: Adding vector REDUCES loss (Causal/Helpful)")
-    print("  Positive: Adding vector INCREASES loss (Harmful)")
-    print("  Near Zero: Orthogonal/Irrelevant to task")
+    print("  Negative: Adding vector REDUCES loss (Causal/Aligned with target answer)")
+    print("  Positive: Adding vector INCREASES loss (Opposed to target answer)")
 
 def main():
     parser = argparse.ArgumentParser()
