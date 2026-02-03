@@ -44,7 +44,7 @@ def parse_args():
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the factorial dataset jsonl")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the activations npz file")
     parser.add_argument("--layers", type=int, nargs="+", default=None, help="Specific layers to extract (if None, all layers)")
-    parser.add_argument("--max_samples", type=int, default=100, help="Maximum number of samples to process (default 100 for speed)")
+    parser.add_argument("--max_samples", type=int, default=None, help="Maximum number of samples to process (default None for all)")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size (currently only 1 supported for precise token alignment)") 
     return parser.parse_args()
 
