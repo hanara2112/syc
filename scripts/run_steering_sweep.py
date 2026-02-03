@@ -68,15 +68,16 @@ def steer_and_generate(model, tokenizer, prompt, layer_idx, vector, alpha, max_n
     res_norms = []
     
     def steering_hook(module, input, output):
-        # We only want to steer the last token of the prompt during prefill
-        # Qwen/Llama forward: output is (hidden_states, ...)
+        # h shape: [Batch, SeqLen, Hidden]
         h = output[0] if isinstance(output, tuple) else output
         
-        # Track norms for interpreting alpha scale
-        with torch.no_grad():
-            res_norms.append(h[0, prompt_len-1, :].norm().item())
+        # During prefill, h.shape[1] == prompt_len
+        # During decoding, h.shape[1] == 1
+        if h.shape[1] >= prompt_len:
+            # Prefill phase: record norm and apply steering
+            with torch.no_grad():
+                res_norms.append(h[0, prompt_len-1, :].norm().item())
             
-        if h.shape[1] >= prompt_len: # Prefill phase
             h[:, prompt_len - 1, :] += alpha * v
             
         return (h,) + output[1:] if isinstance(output, tuple) else h
