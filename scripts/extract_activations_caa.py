@@ -8,6 +8,21 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from pathlib import Path
 
+# --- MONKEY PATCH FOR QWEN + TRANSFORMERS > 4.34 ---
+# Qwen's remote code uses transformers_stream_generator which expects BeamSearchScorer at top level.
+# Modern transformers moved it to .generation.
+import transformers
+try:
+    from transformers import BeamSearchScorer
+except ImportError:
+    try:
+        from transformers.generation import BeamSearchScorer
+        transformers.BeamSearchScorer = BeamSearchScorer
+        print("Monkey-patched transformers.BeamSearchScorer for Qwen compatibility.")
+    except ImportError:
+        print("Could not patch BeamSearchScorer. Qwen loading might fail.")
+# ---------------------------------------------------
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Extract activations for sycophancy analysis using CAA method.")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen-7B", help="HuggingFace model name or path")
