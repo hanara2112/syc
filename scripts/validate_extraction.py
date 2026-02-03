@@ -49,57 +49,73 @@ def main():
     # Create output dir
     os.makedirs(args.output_dir, exist_ok=True)
     
+    # Create output dir
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Track metrics
+    layer_norms = []
+    
+    # 1. Calculate Signal Strength for ALL layers first
+    print("\ncalculating signal strength per layer...")
     for layer in layers:
         acts = data[f"layer_{layer}"]
         
         # DEBUG CHECKS
         if np.all(acts == 0):
             print(f"WARNING: Layer {layer} activations are ALL ZEROS.")
-        if np.all(acts == acts[0]):
-            print(f"WARNING: Layer {layer} activations are ALL IDENTICAL.")
-            
-        # PCA
-        pca = PCA(n_components=2)
-        projected = pca.fit_transform(acts)
-        
-        # Plotting
-        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Plot 1: Behavior (Signal)
-        for label in ['Sycophantic', 'Non-Sycophantic']:
-            mask = labels_behavior == label
-            axes[0].scatter(projected[mask, 0], projected[mask, 1], label=label, alpha=0.6)
-        axes[0].set_title(f"Layer {layer}: By Behavior (Expect Separation)")
-        axes[0].legend()
-        
-        # Plot 2: Token (Confound)
-        unique_tokens = np.unique(target_tokens)
-        for token in unique_tokens:
-            mask = target_tokens == token
-            axes[1].scatter(projected[mask, 0], projected[mask, 1], label=token, alpha=0.6)
-        axes[1].set_title(f"Layer {layer}: By Token (Expect Separation on Diff Axis)")
-        axes[1].legend()
-        
-        plt.tight_layout()
-        save_path = os.path.join(args.output_dir, f"pca_layer_{layer}.png")
-        plt.savefig(save_path)
-        plt.close()
-        
-    print(f"Validation plots saved to {args.output_dir}")
-    
-    # Vector Calculation Check
-    # Sycophancy Direction = (Mean(A+C) - Mean(B+D))
-    # We can check the norm of this vector per layer to see where signal peaks
-    print("\nSycophancy Signal Strength (Norm of Diff-in-Means):")
-    for layer in layers:
-        acts = data[f"layer_{layer}"]
         
         mean_syco = acts[is_sycophantic].mean(axis=0)
         mean_non_syco = acts[~is_sycophantic].mean(axis=0)
         
         diff = mean_syco - mean_non_syco
         norm = np.linalg.norm(diff)
-        print(f"Layer {layer}: {norm:.4f}")
+        layer_norms.append(norm)
+        # print(f"Layer {layer}: {norm:.4f}")
+
+    # 2. Plot Signal Strength Summary
+    plt.figure(figsize=(10, 6))
+    plt.plot(layers, layer_norms, marker='o', label='Sycophancy Signal (Norm of Diff)')
+    plt.xlabel('Layer Index')
+    plt.ylabel('Signal Strength (L2 Norm)')
+    plt.title('Sycophancy Signal Strength across Layers')
+    plt.grid(True)
+    plt.savefig(os.path.join(args.output_dir, "signal_strength_summary.png"))
+    plt.close()
+    
+    # 3. Identify Best Layer
+    best_layer_idx = np.argmax(layer_norms)
+    best_layer = layers[best_layer_idx]
+    print(f"\nMax Signal found at Layer {best_layer} (Norm: {layer_norms[best_layer_idx]:.4f})")
+    
+    # 4. Generate PCA ONLY for Best Layer
+    print(f"Generating PCA plot for best layer: {best_layer}")
+    acts = data[f"layer_{best_layer}"]
+    
+    pca = PCA(n_components=2)
+    projected = pca.fit_transform(acts)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Behavior (Signal)
+    for label in ['Sycophantic', 'Non-Sycophantic']:
+        mask = labels_behavior == label
+        axes[0].scatter(projected[mask, 0], projected[mask, 1], label=label, alpha=0.6)
+    axes[0].set_title(f"Best Layer {best_layer}: By Behavior")
+    axes[0].legend()
+    
+    # Plot 2: Token (Confound)
+    unique_tokens = np.unique(target_tokens)
+    for token in unique_tokens:
+        mask = target_tokens == token
+        axes[1].scatter(projected[mask, 0], projected[mask, 1], label=token, alpha=0.6)
+    axes[1].set_title(f"Best Layer {best_layer}: By Token")
+    axes[1].legend()
+    
+    plt.tight_layout()
+    save_path = os.path.join(args.output_dir, f"pca_best_layer_{best_layer}.png")
+    plt.savefig(save_path)
+    print(f"Saved: {save_path}")
+    plt.close()
 
 if __name__ == "__main__":
     main()
