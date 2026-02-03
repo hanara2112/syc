@@ -1,4 +1,3 @@
-
 import os
 import json
 import argparse
@@ -6,14 +5,14 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from pathlib import Path
+from torch.utils.data import DataLoader, Dataset
+import sys
 
 # --- MONKEY PATCH FOR QWEN + TRANSFORMERS > 4.34 ---
 import transformers
 try:
     from transformers import BeamSearchScorer
 except ImportError:
-    # Try locating it in generation submodules or mock it
     FoundScorer = None
     try:
         from transformers.generation import BeamSearchScorer
@@ -23,20 +22,25 @@ except ImportError:
             from transformers.generation.beam_search import BeamSearchScorer
             FoundScorer = BeamSearchScorer
         except ImportError:
-            # Fallback: Mock it so transformers_stream_generator doesn't crash on import
-            print("WARNING: BeamSearchScorer not found. Creating a dummy class.")
-            class BeamSearchScorer:
-                pass
+            class BeamSearchScorer: pass
             FoundScorer = BeamSearchScorer
 
     if FoundScorer:
         transformers.BeamSearchScorer = FoundScorer
-        import sys
-        # Also ensure it's available in sys.modules for 'from transformers import ...'
         if 'transformers' in sys.modules:
              setattr(sys.modules['transformers'], 'BeamSearchScorer', FoundScorer)
         print("Monkey-patched transformers.BeamSearchScorer for Qwen compatibility.")
 # ---------------------------------------------------
+
+class SycophancyDataset(Dataset):
+    def __init__(self, data):
+        self.data = data
+        
+    def __len__(self):
+        return len(self.data)
+        
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Extract activations for sycophancy analysis using CAA method.")
@@ -44,8 +48,9 @@ def parse_args():
     parser.add_argument("--dataset_path", type=str, required=True, help="Path to the factorial dataset jsonl")
     parser.add_argument("--output_path", type=str, required=True, help="Path to save the activations npz file")
     parser.add_argument("--layers", type=int, nargs="+", default=None, help="Specific layers to extract (if None, all layers)")
-    parser.add_argument("--max_samples", type=int, default=None, help="Maximum number of samples to process (default None for all)")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size (currently only 1 supported for precise token alignment)") 
+    parser.add_argument("--max_samples", type=int, default=None, help="Maximum number of samples to process")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for extraction") 
+    parser.add_argument("--chunk_size", type=int, default=2000, help="Save to disk every N samples")
     return parser.parse_args()
 
 def load_dataset(path):
@@ -56,113 +61,116 @@ def load_dataset(path):
                 data.append(json.loads(line))
     return data
 
-def get_answer_token_index(tokenizer, prompt, completion):
-    """
-    Identifies the index of the first token of the completion in the full sequence.
-    Critical for CAA extraction.
-    """
-    # 1. Tokenize prompt only
-    prompt_tokens = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
-    
-    # 2. Tokenize full text (prompt + completion)
-    full_text = prompt + completion
-    full_tokens = tokenizer(full_text, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
-    
-    # The answer token is the first token after the prompt
-    # verification: check if prompt tokens match the beginning of full tokens
-    if not torch.equal(full_tokens[:len(prompt_tokens)], prompt_tokens):
-        # Fallback/Error handling if tokenization is unstable (e.g. merge issues)
-        # For some tokenizers, prompt + completion tokenizes differently than prompt alone.
-        # We search for the completion tokens at the end.
-        completion_tokens = tokenizer(completion, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
-        # Find where completion starts
-        # This is a simple heuristic: look at the end
-        if torch.equal(full_tokens[-len(completion_tokens):], completion_tokens):
-            return len(full_tokens) - len(completion_tokens)
-        else:
-            # If complex merge, might need more robust matching. 
-            # For now, relying on length of prompt is the standard "first answer token" heuristic 
-            # used in many steering papers, assuming strict appending.
-             pass 
-
-    return len(prompt_tokens)
-
 def main():
     args = parse_args()
     
     print(f"Loading model: {args.model_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, device_map="auto", trust_remote_code=True, dtype=torch.float16)
+    # Ensure pad token is set for batching
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    # Qwen/Llama usually handle right padding correctly for attention masks
+    tokenizer.padding_side = "right" 
     
-    dataset = load_dataset(args.dataset_path)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name, 
+        device_map="auto", 
+        trust_remote_code=True, 
+        dtype=torch.float16
+    )
+    model.eval()
+    
+    raw_data = load_dataset(args.dataset_path)
     if args.max_samples:
-        dataset = dataset[:args.max_samples]
+        raw_data = raw_data[:args.max_samples]
         
-    print(f"Loaded {len(dataset)} samples.")
+    print(f"Loaded {len(raw_data)} samples.")
+    
+    dataset = SycophancyDataset(raw_data)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
     
     # Determine layers
     num_layers = model.config.num_hidden_layers
     if args.layers:
         layers_to_extract = args.layers
     else:
-        layers_to_extract = list(range(num_layers)) # Extract all if not specified
+        layers_to_extract = list(range(num_layers))
         
-    print(f"Extracting layers: {layers_to_extract}")
+    print(f"Extracting layers: {layers_to_extract} with Batch Size: {args.batch_size}")
     
     # Storage
-    metadata = []
-    
-    # Initialize separate storage files per layer to append effectively?
-    # Appending to .npz is hard. Better to save chunks or usage a memory mapped array.
-    # Approach: Save chunks every N samples. Merge later? 
-    # Or just keep list but clear more aggressively?
-    # 28k samples * 32 layers * 4096 dim * 4 bytes = ~14 GB. That's on the edge for 16GB RAM.
-    # Better to save chunks.
-    
-    CHUNK_SIZE = 2000
     chunk_idx = 0
     current_chunk_activations = {l: [] for l in layers_to_extract}
     current_chunk_metadata = []
+    samples_in_chunk = 0
 
-    print(f"Starting extraction with chunk size {CHUNK_SIZE}...")
+    print(f"Starting extraction...")
 
-    for i, item in enumerate(tqdm(dataset)):
-        prompt = item['prompt']
-        completion = item['target_token']
-        full_text = prompt + completion
+    for batch in tqdm(dataloader):
+        # Unpack batch - trivial collation by DataLoader gives list of fields
+        batch_prompts = batch['prompt']
+        batch_completions = batch['target_token']
+        
+        batch_full_texts = [p + c for p, c in zip(batch_prompts, batch_completions)]
         
         try:
-            inputs = tokenizer(full_text, return_tensors="pt").to(model.device)
-            prompt_ids = tokenizer.encode(prompt, add_special_tokens=True) 
-            answer_pos = len(prompt_ids) + 1
+            # 1. Tokenize full texts with padding
+            inputs = tokenizer(
+                batch_full_texts, 
+                return_tensors="pt", 
+                padding=True, 
+                truncation=True, 
+                max_length=2048
+            ).to(model.device)
             
+            # 2. Tokenize prompts independently to find indices
+            # No padding needed here, we just want lengths
+            # We must use the same add_special_tokens setting as the full text (True usually adds BOS)
+            # CAUTION: encode one by one to get accurate lengths without padding interference?
+            # Or map encode.
+            prompt_lens = [len(tokenizer.encode(p, add_special_tokens=True)) for p in batch_prompts]
+            
+            # 3. Calculate target indices
+            # Qwen Tokenization Fix: " (A)" -> [" (", "A", ")"].
+            # We want the "A". The length of prompt tokens points to the START of completion.
+            # So index = len(prompt_ids) points to " (".
+            # index = len(prompt_ids) + 1 points to "A".
+            target_indices = [l + 1 for l in prompt_lens]
+            
+            # 4. Forward Pass
             with torch.no_grad():
                 outputs = model(**inputs, output_hidden_states=True)
-                
+            
+            # 5. Gather activations
             for layer in layers_to_extract:
-                hidden = outputs.hidden_states[layer + 1]
-                pos = min(answer_pos, hidden.shape[1] - 1)
-                act = hidden[0, pos, :].float().cpu().numpy()
-                current_chunk_activations[layer].append(act)
+                # Shape: [Batch, Seq, Hidden]
+                hidden = outputs.hidden_states[layer + 1] 
                 
-            # Store metadata
-            meta = {
-                "question_id": item.get("question_id"),
-                "condition": item.get("condition"),
-                "persona": item.get("persona"),
-                "agreement": item.get("agreement"), 
-                "target_token": item.get("target_token")
-            }
-            current_chunk_metadata.append(meta)
+                batch_acts = []
+                for b_idx in range(len(batch_prompts)):
+                    # Clamp index to handle potential truncation or mismatches
+                    idx = min(target_indices[b_idx], hidden.shape[1] - 1)
+                    vec = hidden[b_idx, idx, :].float().cpu().numpy()
+                    batch_acts.append(vec)
+                
+                current_chunk_activations[layer].extend(batch_acts)
 
-            # Cleanup
-            del outputs, inputs, hidden
-            if i % 100 == 0:
-                torch.cuda.empty_cache()
+            # 6. Store Metadata
+            # batch is a dict of lists, we iterate up to batch size
+            for i in range(len(batch_prompts)):
+                meta = {
+                    "question_id": batch['question_id'][i] if isinstance(batch['question_id'], list) else batch['question_id'][i].item(),
+                    "condition": batch['condition'][i],
+                    "persona": batch['persona'][i],
+                    "agreement": batch['agreement'][i],
+                    "target_token": batch['target_token'][i]
+                }
+                current_chunk_metadata.append(meta)
+                samples_in_chunk += 1
 
-            # Save Chunk
-            if (i + 1) % CHUNK_SIZE == 0:
-                print(f"Saving chunk {chunk_idx}...")
+            # 7. Check Chunk Limit
+            if samples_in_chunk >= args.chunk_size:
+                print(f"Saving chunk {chunk_idx} (Size: {samples_in_chunk})...")
                 chunk_path = f"{args.output_path.replace('.npz', '')}_chunk_{chunk_idx}.npz"
                 
                 save_dict = {
@@ -172,20 +180,25 @@ def main():
                 for layer in layers_to_extract:
                     save_dict[f"layer_{layer}"] = np.vstack(current_chunk_activations[layer])
                 
-                np.savez(chunk_path, **save_dict)
+                np.savez_compressed(chunk_path, **save_dict)
                 print(f"Saved {chunk_path}")
                 
-                # Reset buffers
+                # Reset
                 current_chunk_activations = {l: [] for l in layers_to_extract}
                 current_chunk_metadata = []
+                samples_in_chunk = 0
                 chunk_idx += 1
                 
+                # Force cleanup
+                del inputs, outputs
+                torch.cuda.empty_cache()
+
         except Exception as e:
-            print(f"Error processing sample {i}: {e}")
+            print(f"Error in batch: {e}")
             continue
 
-    # Save remaining
-    if current_chunk_metadata:
+    # Maximum Final Save
+    if samples_in_chunk > 0:
         print(f"Saving final chunk {chunk_idx}...")
         chunk_path = f"{args.output_path.replace('.npz', '')}_chunk_{chunk_idx}.npz"
         
@@ -199,7 +212,7 @@ def main():
         np.savez_compressed(chunk_path, **save_dict)
         print(f"Saved {chunk_path}")
 
-    print("Extraction complete. Please merge chunks manually or load them sequentially in analysis.")
+    print("Extraction complete.")
 
 if __name__ == "__main__":
     main()
