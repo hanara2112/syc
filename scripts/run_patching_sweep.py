@@ -22,10 +22,13 @@ def find_minimal_pairs(data):
         questions[q_id][item['condition']] = item
     
     for q_id, conds in questions.items():
-        if conds['A'] and conds['B']:
-            pairs.append((conds['A'], conds['B']))
-        if conds['C'] and conds['D']:
-            pairs.append((conds['C'], conds['D']))
+        # Pair opposite personas for the same question
+        # A (Liberal) vs C (Conservative)
+        if conds['A'] and conds['C']:
+            pairs.append((conds['A'], conds['C']))
+        # B (Liberal) vs D (Conservative)
+        if conds['B'] and conds['D']:
+            pairs.append((conds['B'], conds['D']))
     return pairs
 
 def patch_and_measure(model, tokenizer, source_prompt, target_prompt, layer_idx, target_ids_A, target_ids_B, debug=False):
