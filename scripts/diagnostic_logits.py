@@ -2,6 +2,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
 import os
+from tqdm import tqdm
 
 def check_logit_shift(model_name="Qwen/Qwen2.5-7B", layer_idx=20):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -12,8 +13,7 @@ def check_logit_shift(model_name="Qwen/Qwen2.5-7B", layer_idx=20):
     meta = data['metadata']
     if meta.shape == (): meta = meta.item()
     
-    v = data[f"layer_{layer_idx}"][0] # Just pick one activation to get shape
-    # Actually calculate syc vector for this chunk
+    # Calculate syc vector for this chunk
     conds = np.array([m['condition'] for m in meta])
     acts = data[f"layer_{layer_idx}"]
     if acts.dtype == 'object': acts = np.vstack(acts).astype(np.float32)
@@ -26,11 +26,8 @@ def check_logit_shift(model_name="Qwen/Qwen2.5-7B", layer_idx=20):
     prompt = meta[0]['prompt']
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     prompt_len = inputs.input_ids.shape[1]
-    
-    id_A = tokenizer.encode("A")[-1]
-    id_B = tokenizer.encode("B")[-1]
 
-    def get_logits(alpha):
+    def get_top_tokens(alpha, top_n=10):
         def hook(module, input, output):
             h = output[0] if isinstance(output, tuple) else output
             if h.shape[1] >= prompt_len:
@@ -42,15 +39,34 @@ def check_logit_shift(model_name="Qwen/Qwen2.5-7B", layer_idx=20):
             outputs = model(**inputs)
             logits = outputs.logits[0, -1, :]
         handle.remove()
-        return logits[id_A].item(), logits[id_B].item()
+        
+        # Get Top N
+        top_indices = torch.topk(logits, top_n).indices.tolist()
+        top_info = []
+        for idx in top_indices:
+            token = tokenizer.decode([idx])
+            top_info.append(f"'{token}' ({logits[idx].item():.2f})")
+            
+        # Check specific tokens
+        labels = ["A", "B", " (A", " (B", "(A", "(B", " Answer"]
+        spec_info = {}
+        for l in labels:
+            ids = tokenizer.encode(l, add_special_tokens=False)
+            if ids:
+                spec_info[l] = logits[ids[-1]].item()
+                
+        return top_info, spec_info
 
-    print(f"\nPrompt: {prompt[-100:]}")
-    a_base, b_base = get_logits(0.0)
-    print(f"Baseline (Alpha=0): Logit A: {a_base:.4f}, Logit B: {b_base:.4f} (Diff: {a_base-b_base:.4f})")
+    print(f"\nPrompt: ...{prompt[-100:]}")
     
-    for alpha in [40.0, 80.0, -40.0, -80.0]:
-        a_steer, b_steer = get_logits(alpha)
-        print(f"Steer (Alpha={alpha}): Logit A: {a_steer:.4f}, Logit B: {b_steer:.4f} (Diff: {a_steer-b_steer:.4f}) | Shift: {a_steer - a_base:.4f}")
+    for alpha in [0.0, 80.0, 200.0, -80.0]:
+        top_tokens, specs = get_top_tokens(alpha)
+        print(f"\n--- Alpha {alpha} ---")
+        print(f"Top 10: {', '.join(top_tokens)}")
+        print("Choice Logits:")
+        sorted_specs = sorted(specs.items(), key=lambda x: x[1], reverse=True)
+        for k, v in sorted_specs:
+            print(f"  {k:7}: {v:.4f}")
 
 if __name__ == "__main__":
     check_logit_shift()
