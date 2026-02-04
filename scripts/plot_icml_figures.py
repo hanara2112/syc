@@ -57,4 +57,4 @@ def plot_refined_figures(csv_path, geom_path, output_dir="results/plots"):
     print(f"Saved: {output_dir}/dissociation_master_plot.png")
 
 if __name__ == "__main__":
-    plot_refined_figures("results/Causal Diagnostics Sweep.csv", "results/geometry_all_layers.csv")
+    plot_refined_figures("results/Causal Diagnostics Sweep.csv", "results/Geometry Master 7k.csv")
