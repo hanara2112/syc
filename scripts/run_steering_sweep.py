@@ -86,10 +86,17 @@ def steer_and_generate(model, tokenizer, prompt, layer_idx, vector, alpha, max_n
     
     def steering_hook(module, input, output):
         h = output[0] if isinstance(output, tuple) else output
-        if h.shape[1] >= prompt_len:
+        
+        # During prefill, h.shape[1] == prompt_len
+        # During decoding, h.shape[1] == 1
+        if h.shape[1] == prompt_len:
             with torch.no_grad():
                 res_norms.append(h[0, prompt_len-1, :].norm().item())
             h[:, prompt_len - 1, :] += alpha * v
+        elif h.shape[1] == 1:
+            # Steer the current decoding token
+            h[:, 0, :] += alpha * v
+            
         return (h,) + output[1:] if isinstance(output, tuple) else h
 
     target_layer = model.model.layers[layer_idx]
@@ -119,6 +126,7 @@ def main():
     parser.add_argument("--alphas", type=float, nargs="+", default=[0.0, 40.0, 80.0, -40.0, -80.0])
     parser.add_argument("--num_samples", type=int, default=20)
     parser.add_argument("--output_csv", type=str, default="results/behavioral_steering_validated_7k.csv")
+    parser.add_argument("--debug", action="store_true", help="Print generations for inspection")
     args = parser.parse_args()
 
     # 1. Load Samples (Metadata only)
@@ -150,9 +158,12 @@ def main():
         # Establish Baselines (Alpha = 0)
         print("  Establishing Baselines (Alpha=0.0)...")
         baseline_labels = []
-        for item in tqdm(test_samples, leave=False):
+        for i, item in enumerate(tqdm(test_samples, leave=False)):
             response, _ = steer_and_generate(model, tokenizer, item['prompt'], layer, v_syc, 0.0)
-            baseline_labels.append(classify_response(response))
+            label = classify_response(response)
+            baseline_labels.append(label)
+            if args.debug and i < 2:
+                print(f"\n      Baseline (Alpha=0.0): {response} -> {label}")
 
         for alpha in args.alphas:
             if alpha == 0.0:
@@ -166,6 +177,9 @@ def main():
                 response, res_norm = steer_and_generate(model, tokenizer, item['prompt'], layer, v_syc, alpha)
                 label = classify_response(response)
                 
+                if args.debug and i < 2:
+                    print(f"\n      Steered (Alpha={alpha}): {response} -> {label}")
+
                 if label != baseline_labels[i] and label != "Unknown" and baseline_labels[i] != "Unknown":
                     flips += 1
                 if label == "Unknown": unknowns += 1
