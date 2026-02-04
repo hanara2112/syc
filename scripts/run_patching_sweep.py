@@ -20,7 +20,7 @@ def find_minimal_pairs(data):
     # Key: question_idx
     questions = {}
     for item in data:
-        q_idx = item['question_idx']
+        q_idx = item['question_id']
         if q_idx not in questions:
             questions[q_idx] = {'A': None, 'B': None, 'C': None, 'D': None}
         questions[q_idx][item['condition']] = item
